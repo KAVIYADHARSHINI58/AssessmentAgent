@@ -36,7 +36,7 @@ async def user_login(username: str, password: str, db: AsyncSession):
         user = await authenticate_user(username, password, db)
         if user:
             print("Login successful!")
-            return username
+            return user
         else:
             print("Invalid credentials.")
             return None

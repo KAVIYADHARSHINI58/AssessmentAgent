@@ -1,0 +1,40 @@
+
+
+
+--For generate mcq api
+{
+  "name": "Harika",
+  "skill_gaps": [
+    "Cloud Computing",
+    "Machine Learning",
+    "Data Visualization"
+  ],
+  "proficiency": {
+    "Python": "Intermediate",
+    "SQL": "Intermediate",
+    "Excel": "Advanced"
+  }
+}
+
+
+--For quiz api
+{
+  "user": {
+    "username": "harika",
+    "password": "harika@123"
+  },
+  "answers": [
+    {
+      "question": "Which cloud computing platform offers a wide range of machine learning services?",
+      "user_answer": "All of the above"
+    },
+    {
+      "question": "What Python library is commonly used for data visualization?",
+      "user_answer": "NumPy"
+    },
+    {
+      "question": "Which of the following is NOT a benefit of using cloud computing for machine learning?",
+      "user_answer": "Increased data security"
+    }
+  ]
+}

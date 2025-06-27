@@ -28,12 +28,11 @@ async def setup_database():
 async def store_mcq_questions(user_id, mcqs):
     async with SessionLocal() as session:
         async with session.begin():
-            for q_num, qdata in mcqs.items():
+            for qdata in mcqs:  # ← FIX: mcqs is a list, not a dict
                 question = qdata['question']
-                options = "\n".join([f"{k}) {v}" for k, v in qdata['options'].items()])
+                options = "\n".join([f"{opt}) {text}" for opt, text in zip(['A', 'B', 'C', 'D'], qdata['options'])])
                 correct_answer = qdata['answer']
 
-                # Create and add new QuizQuestion object
                 quiz_question = QuizQuestion(
                     user_id=user_id,
                     question=question,
@@ -41,6 +40,7 @@ async def store_mcq_questions(user_id, mcqs):
                     correct_answer=correct_answer
                 )
                 session.add(quiz_question)
+
 
 # Function to store user's answers and calculate score (Async)
 async def store_user_answers(user_id, question, user_answer, correct_answer):

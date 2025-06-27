@@ -7,6 +7,9 @@ from user_management import user_login, user_register
 from quiz_generator import generate_mcq_questions, parse_mcqs, evaluate
 import asyncio
 from database import setup_database
+from dotenv import load_dotenv
+load_dotenv()
+
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -24,7 +27,10 @@ class UserCredentials(BaseModel):
 class UserAnswer(BaseModel):
     question: str
     user_answer: str
-    correct_answer: str
+
+class QuizSubmission(BaseModel):
+    user: UserCredentials
+    answers: list[UserAnswer]
 
 # Register user in the database
 @app.post("/register/")
@@ -67,27 +73,84 @@ async def generate_mcq(user_profile: UserProfile, db: Session = Depends(get_db))
     
     return {"message": "MCQs generated and stored successfully!", "questions": mcqs}
 
-# Take the quiz and evaluate answers
+# @app.post("/quiz/")
+# async def take_quiz(submission: QuizSubmission, db: Session = Depends(get_db)):
+#     """API endpoint to evaluate quiz answers based on DB-correct answers"""
+#     # Step 1: Authenticate user
+#     user_obj = await user_login(submission.user.username, submission.user.password, db)
+#     if not user_obj:
+#         raise HTTPException(status_code=401, detail="Invalid username or password")
+
+#     user_id = user_obj.user_id
+
+#     # Step 2: Retrieve quiz questions from DB for this user
+#     mcqs = await get_quiz_questions_by_user(user_id)
+
+#     # Step 3: Convert to dictionary format expected by evaluate()
+#     mcq_dict = {}
+#     for idx, q in enumerate(mcqs, start=1):
+#         q_key = f"Q{idx}"
+#         options = {}
+#         for opt_line in q.options.strip().split('\n'):
+#             if ')' in opt_line:
+#                 k, v = opt_line.split(')', 1)
+#                 options[k.strip()] = v.strip()
+
+#         mcq_dict[q_key] = {
+#             'question': q.question,
+#             'options': options,
+#             'answer': q.correct_answer.strip().lower()
+#         }
+
+#     # Step 4: Evaluate answers (compare user_answer to DB-stored correct_answer)
+#     correct, total, results = evaluate(mcq_dict, submission.answers)
+
+#     # Step 5: Store answers in DB
+#     for q_num, res in results.items():
+#         await store_user_answers(user_id, res['question'], res['user_answer'], res['correct_answer'])
+
+#     # Step 6: Return feedback
+#     detailed_results = []
+#     for q_num, res in results.items():
+#         status = "Correct" if res['is_correct'] else f"Wrong (Correct: {res['correct_answer']})"
+#         detailed_results.append({
+#             "question": res['question'],
+#             "your_answer": res['user_answer'],
+#             "status": status
+#         })
+
+#     return {
+#         "score": f"{correct} out of {total}",
+#         "detailed_results": detailed_results
+#     }
+
+
 @app.post("/quiz/")
-async def take_quiz(user_profile: UserProfile, answers: list[UserAnswer], db: Session = Depends(get_db)):
-    """API endpoint to take the quiz and evaluate answers"""
-    user = await get_user_by_username(user_profile.name)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+async def take_quiz(submission: QuizSubmission, db: Session = Depends(get_db)):
+    # Step 1: Authenticate user
+    user_obj = await user_login(submission.user.username, submission.user.password, db)
+    print(user_obj)
+    if not user_obj:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    user_id = user_obj.user_id
 
-    # Retrieve quiz questions for the user
-    mcqs = await get_quiz_questions_by_user(user.user_id)
+    # Step 2: Fetch quiz questions from DB
+    mcqs = await get_quiz_questions_by_user(user_id)
 
-    # Evaluate answers
-    correct, total, results = evaluate(mcqs, answers)
+    # Step 3: Create a mapping: question -> correct_answer (lowercased)
+    mcqs_by_question = {
+        q.question.strip(): q.correct_answer.strip().lower()
+        for q in mcqs
+    }
 
-    # Store user answers in the database
+    # Step 4: Evaluate using backend answers only
+    correct, total, results = evaluate(mcqs_by_question, submission.answers)
+
+    # Step 5: Store answers in DB
     for q_num, res in results.items():
-        is_correct = 1 if res['is_correct'] else 0
-        score = 1 if res['is_correct'] else 0
-        await store_user_answers(user.user_id, res['question'], res['user_answer'], res['correct_answer'])
+        await store_user_answers(user_id, res['question'], res['user_answer'], res['correct_answer'])
 
-    # Return detailed results
+    # Step 6: Build response
     detailed_results = []
     for q_num, res in results.items():
         status = "Correct" if res['is_correct'] else f"Wrong (Correct: {res['correct_answer']})"
@@ -101,6 +164,8 @@ async def take_quiz(user_profile: UserProfile, answers: list[UserAnswer], db: Se
         "score": f"{correct} out of {total}",
         "detailed_results": detailed_results
     }
+
+
 
 @app.on_event("startup")
 async def on_startup():
