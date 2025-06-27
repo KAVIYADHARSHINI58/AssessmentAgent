@@ -1,157 +1,141 @@
-import shutil
-import os
-from datetime import datetime
-import json
-
-import fitz  # PyMuPDF
-
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
-from fastapi.responses import JSONResponse
-
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-
-from database import SessionLocal
-from models import ResumeUpload, Employee
-from models import ResumeUpload, ResumeText  # ✅ import your new model
-from utils.csv_validator import validate_hr_csv
-from utils.pii_scrubber import scrub_pii
-
-import cohere
+from fastapi import FastAPI, HTTPException, Depends
+from sqlalchemy.orm import Session
+from pydantic import BaseModel, HttpUrl
+from models import User, QuizQuestion, UserAnswer
+from database import get_db, store_mcq_questions, store_user_answers, get_user_by_username, get_quiz_questions_by_user, store_recommended_courses
+from user_management import user_login, user_register
+from quiz_generator import generate_mcq_questions, parse_mcqs, evaluate
+from course_recommender import generate_course_recommendations
+import asyncio
+from database import setup_database
+from dotenv import load_dotenv
+load_dotenv()
 
 
+# Initialize FastAPI app
 app = FastAPI()
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# Pydantic models for request/response data
+class UserProfile(BaseModel):
+    name: str
+    skill_gaps: list[str]
+    proficiency: dict[str, str]
+
+class UserCredentials(BaseModel):
+    username: str
+    password: str
+
+class UserAnswer(BaseModel):
+    question: str
+    user_answer: str
+
+class QuizSubmission(BaseModel):
+    user: UserCredentials
+    answers: list[UserAnswer]
 
 
-# Dependency to get DB session
-async def get_db():
-    async with SessionLocal() as session:
-        yield session
+# Register user in the database
+@app.post("/register/")
+async def register_user(credentials: UserCredentials, db: Session = Depends(get_db)):
+    """API endpoint for user registration"""
+    username = credentials.username
+    password = credentials.password
+    user = await user_register(username, password, db)
+    if user:
+        return {"message": "Registration successful!"}
+    else:
+        raise HTTPException(status_code=400, detail="Username already exists")
 
-co = cohere.Client('Xjgfl6dBLAECvdjaLurKTCxD9q6gdyJCjsRWB11S')
+# Login user and check credentials
+@app.post("/login/")
+async def login_user(credentials: UserCredentials, db: Session = Depends(get_db)):
+    """API endpoint for user login"""
+    username = credentials.username
+    password = credentials.password
+    user = await user_login(username, password, db)
+    if user:
+        return {"message": "Login successful!"}
+    else:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-@app.get("/")
-def root():
-    return {"message": "FastAPI is working!"}
+# Generate MCQs based on user profile
+@app.post("/generate_mcq/")
+async def generate_mcq(user_profile: UserProfile, db: Session = Depends(get_db)):
+    """API endpoint to generate MCQs based on user profile"""
+    mcq_questions_text = generate_mcq_questions(user_profile.model_dump())
+    print(mcq_questions_text)
+    mcqs = parse_mcqs(mcq_questions_text)
+
+    # Store questions in the database
+    user = await get_user_by_username(user_profile.name)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    await store_mcq_questions(user.user_id, mcqs)
+    
+    return {"message": "MCQs generated and stored successfully!", "questions": mcqs}
 
 
-@app.post("/upload-hr-data")
-async def upload_hr_data(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
-    if not file.filename.endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Only CSV files are accepted")
+@app.post("/quiz/")
+async def take_quiz(submission: QuizSubmission, db: Session = Depends(get_db)):
+    # Step 1: Authenticate user
+    user_obj = await user_login(submission.user.username, submission.user.password, db)
+    print(user_obj)
+    if not user_obj:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    user_id = user_obj.user_id
 
-    temp_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(temp_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    # Step 2: Fetch quiz questions from DB
+    mcqs = await get_quiz_questions_by_user(user_id)
 
-    try:
-        df = validate_hr_csv(temp_path)
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
+    # Step 3: Create a mapping: question -> correct_answer (lowercased)
+    mcqs_by_question = {
+        q.question.strip(): q.correct_answer.strip().lower()
+        for q in mcqs
+    }
 
-    for _, row in df.iterrows():
-        stmt = select(Employee).where(Employee.employee_id == row["employee_id"])
-        result = await db.execute(stmt)
-        existing = result.scalar_one_or_none()
-        if not existing:
-            new_emp = Employee(
-                employee_id=row["employee_id"],
-                name=row["name"],
-                role=row["role"],
-                doj=row["doj"],
-                location=row["location"],
-                department=row["department"]
-            )
-            db.add(new_emp)
+    # Step 4: Evaluate using backend answers only
+    correct, total, results = evaluate(mcqs_by_question, submission.answers)
 
-    await db.commit()
-    return JSONResponse(content={"message": "HR data uploaded and saved!"})
+    # Step 5: Store answers in DB
+    for q_num, res in results.items():
+        await store_user_answers(user_id, res['question'], res['user_answer'], res['correct_answer'])
 
-@app.post("/upload-resume")
-async def upload_resume(
-    file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db)
-):
-    if file.content_type not in ["application/pdf"]:
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed for now")
+    # Step 6: Build response
+    detailed_results = []
+    for q_num, res in results.items():
+        status = "Correct" if res['is_correct'] else f"Wrong (Correct: {res['correct_answer']})"
+        detailed_results.append({
+            "question": res['question'],
+            "your_answer": res['user_answer'],
+            "status": status
+        })
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"{timestamp}_{file.filename}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    return {
+        "score": f"{correct} out of {total}",
+        "detailed_results": detailed_results
+    }
 
-    # ✅ Save file
-    with open(file_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
+@app.post("/recommend_courses/")
+async def recommend_courses(user_profile: UserProfile, quiz_results: dict, db: Session = Depends(get_db)):
+    # Step 1: Get user from username
+    user = await get_user_by_username(user_profile.name)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-    # ✅ Extract text
-    try:
-        extracted_text = ""
-        with fitz.open(file_path) as pdf:
-            for page in pdf:
-                extracted_text += page.get_text()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error parsing PDF: {str(e)}")
+    # Step 2: Generate AI-based course recommendations
+    recommendations = generate_course_recommendations(user_profile.model_dump(), quiz_results)
 
-    # ✅ Scrub PII
-    cleaned_text = scrub_pii(extracted_text)
+    # Step 3: Store in DB
+    await store_recommended_courses(user.user_id, recommendations, db)
 
-    # ✅ Store metadata + raw text only
-    new_resume = ResumeUpload(
-        filename=filename,
-        file_path=file_path,
-        content_type=file.content_type,
-        uploaded_at=datetime.utcnow()
-    )
-    db.add(new_resume)
-    await db.commit()
+    # Step 4: Return response
+    return {"recommendations": recommendations}
 
-    resume_text = ResumeText(
-        resume_id=new_resume.id,
-        content=extracted_text  # store raw only
-    )
-    db.add(resume_text)
-    await db.commit()
 
-    # ✅ Call Cohere for profiling
-    prompt = f"""
-You are an intelligent assistant. Based on the following cleaned resume text, extract:
-- The candidate's name (if available)
-- Top skill gaps (areas to learn more)
-- Proficiency levels for known skills
 
-Respond EXACTLY in this JSON format:
-{{
-  "name": "Candidate Name",
-  "skill_gaps": ["Skill1", "Skill2"],
-  "proficiency": {{"SkillA": "Intermediate", "SkillB": "Advanced"}}
-}}
+@app.on_event("startup")
+async def on_startup():
+    await setup_database()
 
-Resume:
-\"\"\"{cleaned_text}\"\"\"
-"""
-
-    response = co.generate(
-        model="command-r-plus",
-        prompt=prompt,
-        max_tokens=300,
-        temperature=0.3
-    )
-
-    try:
-        profile_json = json.loads(response.generations[0].text.strip())
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="Cohere output is not valid JSON.")
-
-    return JSONResponse(status_code=200, content={
-        "filename": filename,
-        "message": "Resume uploaded, parsed, PII scrubbed, profiled successfully",
-        "file_path": file_path,
-        "profile": profile_json,
-        "raw_preview": extracted_text[:300],
-        "scrubbed_preview": cleaned_text[:300]
-    })
+# Run the FastAPI app with `uvicorn main:app --reload`

@@ -38,3 +38,41 @@
     }
   ]
 }
+
+--For course recommender api
+{
+  "user_profile": {
+    "name": "Harika",
+    "skill_gaps": [
+      "Cloud Computing",
+      "Machine Learning",
+      "Data Visualization"
+    ],
+    "proficiency": {
+      "Python": "Intermediate",
+      "SQL": "Intermediate",
+      "Excel": "Advanced"
+    }
+  },
+  "quiz_results": {
+    "score": "20 out of 30",
+    "detailed_results": [
+      {
+        "question": "Which cloud computing platform offers a wide range of machine learning services?",
+        "your_answer": "all of the above",
+        "status": "Correct"
+      },
+      {
+        "question": "What Python library is commonly used for data visualization?",
+        "your_answer": "numpy",
+        "status": "Wrong (Correct: Matplotlib)"
+      },
+      {
+        "question": "Which of the following is NOT a benefit of using cloud computing for machine learning?",
+        "your_answer": "increased data security",
+        "status": "Correct"
+      }
+    ]
+  }
+}
+

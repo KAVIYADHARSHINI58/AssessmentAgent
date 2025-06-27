@@ -67,26 +67,6 @@ def parse_mcqs(mcq_text: str) -> List[dict]:
         })
     return mcqs
 
-# def evaluate(mcqs, user_answers):
-#     total = len(mcqs)
-#     correct = 0
-#     results = {}
-
-#     for q_num, qdata in mcqs.items():
-#         user_ans = next((ua for ua in user_answers if ua.question == qdata['question']), None)
-#         if not user_ans:
-#             continue
-#         is_correct = user_ans.user_answer.strip().lower() == qdata['answer']
-#         results[q_num] = {
-#             'question': qdata['question'],
-#             'user_answer': user_ans.user_answer,
-#             'correct_answer': qdata['answer'],
-#             'is_correct': is_correct
-#         }
-#         if is_correct:
-#             correct += 1
-
-#     return correct, total, results
 
 def evaluate(mcqs_by_question: dict, user_answers: list):
     total = len(mcqs_by_question)*10
